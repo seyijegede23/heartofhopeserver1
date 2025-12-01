@@ -1,4 +1,3 @@
-// server/server.js
 require('dotenv').config();
 const express = require('express');
 const Stripe = require('stripe');
@@ -9,7 +8,7 @@ const bcrypt = require('bcryptjs');
 
 // --- 1. CONFIGURATION CHECKS ---
 if (!process.env.STRIPE_SECRET_KEY || !process.env.EMAIL_USER || !process.env.EMAIL_PASS || !process.env.MONGO_URI) {
-    console.error("❌ ERROR: Missing required keys in .env file!");
+    console.error("❌ ERROR: Missing keys in .env file!");
     process.exit(1);
 }
 
@@ -22,10 +21,13 @@ mongoose.connect(process.env.MONGO_URI)
   .catch((err) => console.error("❌ MongoDB Error:", err));
 
 // --- 3. DATABASE MODELS ---
+
+// Updated Admin Schema with ROLE
 const AdminSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
   email: { type: String, required: true },
   password: { type: String, required: true },
+  role: { type: String, default: 'admin', enum: ['superadmin', 'admin'] }, // <--- NEW FIELD
   resetToken: String,
   resetTokenExpiry: Date
 });
@@ -44,7 +46,7 @@ const ContactMessage = mongoose.model('ContactMessage', new mongoose.Schema({
 }));
 
 // --- 4. MIDDLEWARE ---
-app.use(cors({ origin: 'http://localhost:8080' })); // Matches your frontend
+app.use(cors({ origin: '*' })); // Allow all origins for easier deployment
 app.use(express.json());
 
 const transporter = nodemailer.createTransport({
@@ -54,7 +56,7 @@ const transporter = nodemailer.createTransport({
 
 // ================= ADMIN AUTHENTICATION ================= //
 
-// Login
+// Login (Updated to return ROLE)
 app.post('/auth/login', async (req, res) => {
   const { username, password } = req.body;
   try {
@@ -64,20 +66,25 @@ app.post('/auth/login', async (req, res) => {
     const isMatch = await bcrypt.compare(password, admin.password);
     if (!isMatch) return res.status(400).json({ error: "Invalid password" });
 
-    res.json({ success: true, message: "Login successful" });
+    // Send back the role so frontend knows what buttons to show
+    res.json({ 
+      success: true, 
+      username: admin.username,
+      role: admin.role 
+    });
   } catch (err) { res.status(500).json({ error: "Login failed" }); }
 });
 
-// Forgot Password (Send Code)
+// Forgot Password
 app.post('/auth/forgot-password', async (req, res) => {
-  const { identifier } = req.body; // Username OR Email
+  const { identifier } = req.body;
   try {
     const admin = await Admin.findOne({ $or: [{ username: identifier }, { email: identifier }] });
     if (!admin) return res.status(400).json({ error: "Account not found" });
 
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     admin.resetToken = code;
-    admin.resetTokenExpiry = Date.now() + 900000; // 15 mins
+    admin.resetTokenExpiry = Date.now() + 900000;
     await admin.save();
 
     await transporter.sendMail({
@@ -91,7 +98,7 @@ app.post('/auth/forgot-password', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Error sending code" }); }
 });
 
-// Reset Password (Verify Code)
+// Reset Password
 app.post('/auth/reset-password', async (req, res) => {
   const { code, newPassword } = req.body;
   try {
@@ -109,39 +116,76 @@ app.post('/auth/reset-password', async (req, res) => {
 });
 
 
-// ================= ADMIN DASHBOARD ROUTES ================= //
+// ================= SUPER ADMIN ONLY ROUTES ================= //
 
-// Get All Data (Protected)
-app.post('/admin/data', async (req, res) => {
-  try {
-    const [volunteers, messages, subscribers, admins] = await Promise.all([
-      Volunteer.find().sort({ date: -1 }),
-      ContactMessage.find().sort({ date: -1 }),
-      Subscriber.find().sort({ date: -1 }),
-      Admin.find({}, '-password -resetToken') // Hides passwords
-    ]);
-    res.json({ volunteers, messages, subscribers, admins });
-  } catch (err) { res.status(500).json({ error: "Failed to fetch data" }); }
-});
-
-// Create New Admin User
+// Create New Admin (Protected)
 app.post('/admin/add-user', async (req, res) => {
-  const { newUsername, newEmail, newPassword } = req.body;
+  const { currentUser, newUsername, newEmail, newPassword } = req.body;
+
   try {
+    // 1. SECURITY CHECK: Is the requestor a Super Admin?
+    const requestor = await Admin.findOne({ username: currentUser });
+    if (!requestor || requestor.role !== 'superadmin') {
+      return res.status(403).json({ error: "Access Denied: Only Super Admin can create users." });
+    }
+
+    // 2. Create the user
     const existing = await Admin.findOne({ $or: [{ username: newUsername }, { email: newEmail }] });
     if (existing) return res.status(400).json({ error: "User already exists" });
 
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(newPassword, salt);
 
-    await new Admin({ username: newUsername, email: newEmail, password: hashedPassword }).save();
+    // New users are regular 'admin' by default
+    await new Admin({ 
+      username: newUsername, 
+      email: newEmail, 
+      password: hashedPassword,
+      role: 'admin' 
+    }).save();
+
     res.json({ success: true, message: "Admin created" });
   } catch (err) { res.status(500).json({ error: "Failed to create admin" }); }
 });
 
-// Send Newsletter Broadcast
+// Delete Admin (Protected)
+app.post('/admin/delete-user', async (req, res) => {
+  const { currentUser, targetId } = req.body;
+
+  try {
+    // 1. SECURITY CHECK
+    const requestor = await Admin.findOne({ username: currentUser });
+    if (!requestor || requestor.role !== 'superadmin') {
+      return res.status(403).json({ error: "Access Denied: Only Super Admin can delete users." });
+    }
+
+    // 2. Prevent Suicide (Deleting yourself)
+    if (requestor._id.toString() === targetId) {
+      return res.status(400).json({ error: "You cannot delete your own account" });
+    }
+
+    await Admin.findByIdAndDelete(targetId);
+    res.json({ success: true, message: "User deleted" });
+  } catch (err) { res.status(500).json({ error: "Failed to delete" }); }
+});
+
+
+// ================= GENERAL ADMIN ROUTES ================= //
+
+app.post('/admin/data', async (req, res) => {
+  try {
+    const [volunteers, messages, subscribers, admins] = await Promise.all([
+      Volunteer.find().sort({ date: -1 }),
+      ContactMessage.find().sort({ date: -1 }),
+      Subscriber.find().sort({ date: -1 }),
+      Admin.find({}, '-password -resetToken')
+    ]);
+    res.json({ volunteers, messages, subscribers, admins });
+  } catch (err) { res.status(500).json({ error: "Failed to fetch data" }); }
+});
+
 app.post('/send-newsletter', async (req, res) => {
-  const { subject, message, adminPassword } = req.body; // In real app, verify session, not password again
+  const { subject, message } = req.body; 
   try {
     const subscribers = await Subscriber.find({});
     if (subscribers.length === 0) return res.status(400).json({ error: "No subscribers" });
@@ -161,7 +205,6 @@ app.post('/send-newsletter', async (req, res) => {
 
 // ================= PUBLIC ROUTES ================= //
 
-// Stripe Payment
 app.post('/create-checkout-session', async (req, res) => {
   const { amount, isMonthly } = req.body;
   try {
@@ -177,48 +220,27 @@ app.post('/create-checkout-session', async (req, res) => {
         quantity: 1,
       }],
       mode: isMonthly ? 'subscription' : 'payment',
-      success_url: 'http://localhost:8080/success',
-      cancel_url: 'http://localhost:8080/donate',
+      success_url: 'https://hands-of-hope-frontend.vercel.app/success', // Update with your real frontend URL later
+      cancel_url: 'https://hands-of-hope-frontend.vercel.app/donate',
     });
     res.json({ url: session.url });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Volunteer Application
 app.post('/apply-volunteer', async (req, res) => {
   try {
     await new Volunteer(req.body).save();
-    
-    // Notify Admin via Email
-    await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: process.env.EMAIL_USER,
-      subject: `New Volunteer: ${req.body.firstName}`,
-      html: `<p>New volunteer application from ${req.body.email}</p>`
-    });
-
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: "Failed" }); }
 });
 
-// Contact Form
 app.post('/contact-us', async (req, res) => {
   try {
     await new ContactMessage(req.body).save();
-
-    await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: process.env.EMAIL_USER,
-      replyTo: req.body.email,
-      subject: `Inquiry: ${req.body.subject}`,
-      html: `<p>From: ${req.body.email}</p><p>${req.body.message}</p>`
-    });
-
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: "Failed" }); }
 });
 
-// Newsletter Subscribe
 app.post('/subscribe', async (req, res) => {
   try {
     if (await Subscriber.findOne({ email: req.body.email })) return res.status(400).json({ error: "Already subscribed" });
