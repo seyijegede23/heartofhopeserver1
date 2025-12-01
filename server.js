@@ -215,8 +215,8 @@ app.post('/create-checkout-session', async (req, res) => {
         quantity: 1,
       }],
       mode: isMonthly ? 'subscription' : 'payment',
-      success_url: 'http://localhost:8080/success',
-      cancel_url: 'http://localhost:8080/donate',
+      success_url: 'https://hands-of-hope-2oxs.vercel.apps/success',
+      cancel_url: 'https://hands-of-hope-2oxs.vercel.app/donate',
     });
     res.json({ url: session.url });
   } catch (err) { res.status(500).json({ error: err.message }); }
