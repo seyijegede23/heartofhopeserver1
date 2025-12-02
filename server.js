@@ -45,7 +45,7 @@ const ContactMessage = mongoose.model('ContactMessage', new mongoose.Schema({
 }));
 
 // --- MIDDLEWARE ---
-app.use(cors({ origin: 'https://hands-of-hope-virid.vercel.app' })); // Adjust to your frontend port
+app.use(cors({ origin: 'https://hands-of-hope-2oxs.vercel.app' })); // Adjust to your frontend port
 app.use(express.json());
 
 const transporter = nodemailer.createTransport({
