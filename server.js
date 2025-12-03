@@ -204,7 +204,7 @@ app.post('/create-checkout-session', async (req, res) => {
   const { amount, isMonthly } = req.body;
   try {
     const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
+      payment_method_types: ['card','Bank Transfer'],
       line_items: [{
         price_data: {
           currency: 'usd',
@@ -215,8 +215,8 @@ app.post('/create-checkout-session', async (req, res) => {
         quantity: 1,
       }],
       mode: isMonthly ? 'subscription' : 'payment',
-      success_url: 'https://hands-of-hope-2oxs.vercel.app/success',
-      cancel_url: 'https://hands-of-hope-2oxs.vercel.app/donate',
+      success_url: 'https://hands-of-hope-main.vercel.app/success',
+      cancel_url: 'https://hands-of-hope-main.vercel.app/donate',
     });
     res.json({ url: session.url });
   } catch (err) { res.status(500).json({ error: err.message }); }
