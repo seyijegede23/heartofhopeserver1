@@ -204,7 +204,7 @@ app.post('/create-checkout-session', async (req, res) => {
   const { amount, isMonthly } = req.body;
   try {
     const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card','Bank Transfer'],
+      payment_method_types: ['card',],
       line_items: [{
         price_data: {
           currency: 'usd',
