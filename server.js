@@ -92,7 +92,7 @@ app.post('/auth/forgot-password', async (req, res) => {
   const { identifier } = req.body;
   try {
     const admin = await Admin.findOne({ $or: [{ username: identifier }, { email: identifier }] });
-    if (!admin) return res.status(400).json({ error: "Account not found" });
+    if (!admin) return res.status(400).json({ error: "Not Valid" });
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     admin.resetToken = code; admin.resetTokenExpiry = Date.now() + 900000; await admin.save();
     await transporter.sendMail({ from: process.env.EMAIL_USER, to: admin.email, subject: "🔑 Reset Code", html: getEmailTemplate("Reset Password", `<h1>${code}</h1>`) });
