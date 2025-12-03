@@ -54,16 +54,24 @@ const Event = mongoose.model('Event', new mongoose.Schema({
   registrants: [{ name: String, email: String, date: { type: Date, default: Date.now } }]
 }));
 
-// --- MIDDLEWARE ---
-app.use(morgan('dev')); 
-app.use(helmet());
-app.use(mongoSanitize());
-app.use(cors({ origin: 'https://hands-of-hope-main.vercel.app' }));
-app.use(express.json());
+// ================= MIDDLEWARE ================= //
+
+app.use(express.json()); // 1. Parse Body FIRST
+app.use(express.urlencoded({ extended: true })); 
+app.use(morgan('dev')); // 2. Log
+app.use(helmet()); // 3. Secure Headers
+app.use(cors({ origin: '*' })); // 4. CORS
+
+// 5. SANITIZE (FIXED: Allow dots for emails)
+app.use(mongoSanitize({
+  allowDots: true, // <--- THIS FIXES THE EMAIL ERROR
+  replaceWith: '_'
+}));
+
 app.use(rateLimit({ 
   windowMs: 15 * 60 * 1000, 
   max: 100,
-  message: { error: "Too many requests, please try again later." }
+  message: { error: "Too many requests." }
 }));
 
 const transporter = nodemailer.createTransport({
@@ -71,11 +79,44 @@ const transporter = nodemailer.createTransport({
   auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
 });
 
-// --- TEMPLATES ---
+// --- EMAIL TEMPLATES ---
 const getEmailTemplate = (subject, content) => `<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{background:#f3f4f6;font-family:sans-serif}.wrapper{width:100%;padding:40px 0}.main{background:#fff;max-width:600px;margin:0 auto;border-radius:8px;padding:40px;box-shadow:0 4px 6px rgba(0,0,0,0.05)}h2{color:#e11d48;margin-top:0}a{color:#e11d48;text-decoration:none;font-weight:bold}.btn{background:#e11d48;color:#fff!important;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;margin:20px 0}</style></head><body><div class="wrapper"><div class="main"><h2>${subject}</h2>${content}<hr style="border:0;border-top:1px solid #eee;margin:30px 0"><p style="font-size:12px;color:#888;text-align:center">Hearts Hands of Hope</p></div></div></body></html>`;
+
+// UPDATED TICKET TEMPLATE (Better QR Code)
 const getTicketTemplate = (event, userName, userEmail) => {
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(`Ticket:${event.title}|User:${userEmail}`)}`;
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{background:#f3f4f6;font-family:sans-serif;padding:20px}.ticket{max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #ddd}.header{background:#e11d48;color:#fff;padding:20px;text-align:center}.content{padding:30px;display:flex;justify-content:space-between;align-items:center}.info h2{margin:0 0 10px}.label{font-size:10px;color:#888;text-transform:uppercase;font-weight:bold;display:block}.val{font-size:16px;margin-bottom:10px;display:block}</style></head><body><div class="ticket"><div class="header"><h1>EVENT TICKET</h1></div><div class="content"><div class="info"><h2>${event.title}</h2><span class="label">Attendee</span><span class="val">${userName}</span><span class="label">Date</span><span class="val">${new Date(event.date).toLocaleDateString()}</span><span class="label">Location</span><span class="val">${event.location}</span></div><div><img src="${qrUrl}" width="120" height="120" style="border:4px solid white;box-shadow:0 2px 5px rgba(0,0,0,0.1)"></div></div></div></body></html>`;
+  // Using QuickChart for reliable QR codes in Gmail
+  const qrUrl = `https://quickchart.io/qr?text=${encodeURIComponent(`Ticket:${event.title}|User:${userEmail}`)}&size=200`;
+  
+  return `
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <meta charset="utf-8">
+  </head>
+  <body style="background-color:#f3f4f6;font-family:Arial,sans-serif;padding:20px;">
+    <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 10px rgba(0,0,0,0.1);">
+      <div style="background:#e11d48;color:#fff;padding:20px;text-align:center;">
+        <h1 style="margin:0;font-size:24px;">EVENT TICKET</h1>
+      </div>
+      <div style="padding:30px;display:flex;justify-content:space-between;align-items:center;">
+        <div style="flex:1;">
+          <h2 style="margin:0 0 15px;color:#1f2937;">${event.title}</h2>
+          <p style="margin:5px 0;color:#4b5563;font-size:14px;"><strong>Attendee:</strong> ${userName}</p>
+          <p style="margin:5px 0;color:#4b5563;font-size:14px;"><strong>Date:</strong> ${new Date(event.date).toLocaleDateString()}</p>
+          <p style="margin:5px 0;color:#4b5563;font-size:14px;"><strong>Location:</strong> ${event.location}</p>
+        </div>
+        <div style="text-align:center;margin-left:20px;">
+          <img src="${qrUrl}" alt="QR Code" width="120" height="120" style="display:block;" />
+          <span style="font-size:10px;color:#9ca3af;display:block;margin-top:5px;">SCAN ME</span>
+        </div>
+      </div>
+      <div style="background:#f9fafb;padding:15px;text-align:center;font-size:12px;color:#6b7280;border-top:1px solid #eee;">
+        Please present this email at the entrance.
+      </div>
+    </div>
+  </body>
+  </html>
+  `;
 };
 
 // ================= ROUTES ================= //
@@ -88,17 +129,19 @@ app.post('/auth/login', async (req, res) => {
     res.json({ success: true, username: admin.username, role: admin.role });
   } catch (err) { res.status(500).json({ error: "Login failed" }); }
 });
+
 app.post('/auth/forgot-password', async (req, res) => {
   const { identifier } = req.body;
   try {
     const admin = await Admin.findOne({ $or: [{ username: identifier }, { email: identifier }] });
-    if (!admin) return res.status(400).json({ error: "Not Valid" });
+    if (!admin) return res.status(400).json({ error: "Account not found" });
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     admin.resetToken = code; admin.resetTokenExpiry = Date.now() + 900000; await admin.save();
     await transporter.sendMail({ from: process.env.EMAIL_USER, to: admin.email, subject: "🔑 Reset Code", html: getEmailTemplate("Reset Password", `<h1>${code}</h1>`) });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: "Error" }); }
 });
+
 app.post('/auth/reset-password', async (req, res) => {
   const { code, newPassword } = req.body;
   try {
@@ -119,6 +162,7 @@ app.post('/admin/add-user', async (req, res) => {
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: "Failed" }); }
 });
+
 app.post('/admin/delete-user', async (req, res) => {
   const { currentUser, targetId } = req.body;
   try {
@@ -140,6 +184,7 @@ app.post('/admin/data', async (req, res) => {
     res.json({ volunteers, messages, subscribers, admins, donations, events });
   } catch (err) { res.status(500).json({ error: "Failed" }); }
 });
+
 app.post('/admin/request-broadcast-otp', async (req, res) => {
   const { currentUser, subject } = req.body;
   try {
@@ -150,6 +195,7 @@ app.post('/admin/request-broadcast-otp', async (req, res) => {
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: "Failed" }); }
 });
+
 app.post('/send-newsletter', async (req, res) => {
   const { subject, message, currentUser, otp } = req.body;
   try {
@@ -186,20 +232,15 @@ app.post('/events/register', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Failed" }); }
 });
 
-// --- PAYMENT CHECKOUT SESSION (UPDATED FOR ALL PAYMENT METHODS) ---
 app.post('/create-checkout-session', async (req, res) => {
   const { amount, isMonthly, name, email } = req.body;
   try {
     const session = await stripe.checkout.sessions.create({
-      customer_email: email,
+      payment_method_types: ['card'], customer_email: email,
       metadata: { donorName: name, donorEmail: email, donationAmount: amount, donationType: isMonthly ? "Monthly" : "One-time" },
       line_items: [{ price_data: { currency: 'usd', product_data: { name: 'Donation' }, unit_amount: Math.round(amount * 100) }, quantity: 1 }],
       mode: 'payment',
-      
-      // --- ENABLE AUTOMATIC PAYMENT METHODS (Apple Pay, Google Pay, etc) ---
-      automatic_payment_methods: { enabled: true }, 
-
-      // URLs (Update this to your Vercel URL for production)
+      // UPDATE TO YOUR RENDER/VERCEL URLS FOR PRODUCTION
       success_url: 'http://localhost:8080/success?session_id={CHECKOUT_SESSION_ID}',
       cancel_url: 'http://localhost:8080/donate',
     });
